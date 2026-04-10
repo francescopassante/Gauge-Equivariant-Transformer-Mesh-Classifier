@@ -93,13 +93,14 @@ class MeshPreprocessor:
 
             data.append(
                 {
+                    "features": features[i],
                     "q_indices": neighbor_indices.astype(np.int32),
                     "u_q": log_map[neighbor_indices].astype(np.float32),
                     "g_qp": g_qp.astype(np.float32),
                 }
             )
 
-            return data, features
+            return data
 
     def clean_mesh(self):
         """Clean the mesh by removing duplicated vertices, degenerate triangles, and non-manifold edges using Open3D and Trimesh."""
@@ -149,38 +150,39 @@ if __name__ == "__main__":
 
     for j, filename in enumerate(tqdm(paths)):
         preprocessor = MeshPreprocessor.from_file(
-            base + f"T{filename}.off", subsample=0.1
+            base + f"T{filename}.off", subsample=0.2
         )
         try:
-            neighbor_data = preprocessor.compute_log_and_ptransport(
-                radius=0.2, max_neighbors=K
-            )
+            data = preprocessor.compute_log_and_ptransport(radius=0.2, max_neighbors=K)
         except Exception:
             preprocessor.clean_mesh()
             try:
-                neighbor_data = preprocessor.compute_log_and_ptransport(
+                data = preprocessor.compute_log_and_ptransport(
                     radius=0.2, max_neighbors=K
                 )
             except Exception as e:
                 print(f"Failed to process T{filename}.off after cleaning: {e}")
                 continue
 
-        N = len(neighbor_data)  # number of vertices
+        N = len(data)  # number of vertices
 
         # Preallocate tensors
+        features = torch.zeros((N, 3), dtype=torch.float32)  # local features
         neighbors = torch.full((N, K), -1, dtype=torch.long)  # neighbor indices
         u_q = torch.zeros((N, K, 2), dtype=torch.float32)  # 2D vectors
         g_qp = torch.zeros((N, K), dtype=torch.float32)  # cos/sin angles
         mask = torch.zeros((N, K), dtype=torch.bool)  # valid neighbors mask
 
         # Fill tensors
-        for i, d in enumerate(neighbor_data):
+        for i, d in enumerate(data):
             q_indices = d["q_indices"]
             n = min(len(q_indices), K)  # number of neighbors (capped at K)
 
             u = d["u_q"]
             g = d["g_qp"]
 
+            # store features
+            features[i] = torch.from_numpy(d["features"])
             # store neighbor indices
             neighbors[i, :n] = torch.from_numpy(q_indices)
             # store vectors
@@ -192,7 +194,13 @@ if __name__ == "__main__":
 
         # Save as a PyTorch file
         torch.save(
-            {"neighbors": neighbors, "u_q": u_q, "g_qp": g_qp, "mask": mask},
+            {
+                "features": features,
+                "neighbors": neighbors,
+                "u_q": u_q,
+                "g_qp": g_qp,
+                "mask": mask,
+            },
             f"data/processed/T{filename}.pt",
         )
         # Save the preprocessed mesh as well, for reference (optional)
