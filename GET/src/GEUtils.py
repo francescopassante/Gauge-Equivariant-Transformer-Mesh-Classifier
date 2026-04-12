@@ -214,10 +214,10 @@ if __name__ == "__main__":
             W += c0[i] * taylor_basis[0][0][0]
         # Ordine 1
         for i in range(taylor_basis[1].shape[0]):
-            W += taylor_basis[1][0][0] * u[0] + taylor_basis[1][0][1] * u[1]
+            W += c1[i] * (taylor_basis[1][0][0] * u[0] + taylor_basis[1][0][1] * u[1])
         # # Ordine 2
         for i in range(taylor_basis[2].shape[0]):
-            W += (
+            W += c2[i] * (
                 taylor_basis[2][0][0] * u[0] ** 2
                 + taylor_basis[2][0][1] * 2 * u[0] * u[1]
                 + taylor_basis[2][0][2] * u[1] ** 2
