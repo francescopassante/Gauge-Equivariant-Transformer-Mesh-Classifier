@@ -100,23 +100,42 @@ class RegularToRegular:
 
     def extended_regular_representation(self, theta):
         """
-        Builds the extended regular representation rho_tilde(theta)
-        for a rotation by angle theta using the DFT-based change of basis A
+        theta: shape (V, K)  # vertices, neighbors
+
+        returns:
+            rho: shape (V, K, N, N)
         """
-        # D_theta è una matrice a blocchi diagonali
-        D_theta = torch.eye(self.N)
-        # Il blocco (0,0) è 1 (già impostato con eye)
+        V, K = theta.shape
+        device = theta.device
 
+        # Initialize D_theta batch
+        D_theta = torch.zeros(V, K, self.N, self.N, device=device)
+
+        # k = 0 block (scalar irrep)
+        D_theta[..., 0, 0] = 1.0
+
+        # Higher frequencies
         for k in range(1, (self.N // 2) + 1):
-            cos_kt = torch.cos(torch.tensor(k * theta))
-            sin_kt = torch.sin(torch.tensor(k * theta))
-            # Matrice di rotazione per la k-esima irrep
-            R_k = torch.tensor([[cos_kt, -sin_kt], [sin_kt, cos_kt]])
-            D_theta[2 * k - 1 : 2 * k + 1, 2 * k - 1 : 2 * k + 1] = R_k
+            cos_kt = torch.cos(k * theta)  # (V, K)
+            sin_kt = torch.sin(k * theta)  # (V, K)
 
-        # rho_tilde(theta) = A @ D_theta @ A.T
-        # Round to nearest e-6:
-        return (self.A @ D_theta @ self.A.T).round(decimals=6)
+            i = 2 * k - 1
+            j = 2 * k
+
+            D_theta[..., i, i] = cos_kt
+            D_theta[..., i, j] = -sin_kt
+            D_theta[..., j, i] = sin_kt
+            D_theta[..., j, j] = cos_kt
+
+        # Apply change of basis: A @ D @ A^T in batch
+        A = self.A  # (N, N)
+
+        rho = torch.matmul(
+            torch.matmul(A, D_theta),  # broadcasted
+            A.T,
+        )
+
+        return rho.round(decimals=6)
 
 
 class LocalToRegular:
@@ -170,6 +189,7 @@ class LocalToRegular:
 if __name__ == "__main__":
     N = 3
     regular_to_regular = RegularToRegular(N)
+
     taylor_basis = regular_to_regular.get_taylor_basis()
     print(len(taylor_basis))
     print(taylor_basis[0].shape)
@@ -205,7 +225,7 @@ if __name__ == "__main__":
         return W
 
     # 2. Definisci la rotazione (deve essere la stessa usata in get_taylor_basis)
-    theta = 2 * np.pi / N
+    theta = torch.tensor([[2 * np.pi / N]])
     cos_t, sin_t = np.cos(theta), np.sin(theta)
     # Matrice di rotazione passiva (cambio di coordinate)
     R_inv = torch.tensor([[cos_t, sin_t], [-sin_t, cos_t]], dtype=torch.float32)
