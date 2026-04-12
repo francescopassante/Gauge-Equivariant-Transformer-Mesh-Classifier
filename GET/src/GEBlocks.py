@@ -80,13 +80,13 @@ class SelfAttentionBlock(nn.Module):
         self.register_buffer("value_basis_second_order", value_basis[2])
 
         self.value_matrix_zero_order_params = nn.Parameter(
-            torch.randn(self.value_basis_zero_order.shape[0]) * 0.02
+            torch.randn(in_channels, self.value_basis_zero_order.shape[0]) * 0.02
         )
         self.value_matrix_first_order_params = nn.Parameter(
-            torch.randn(self.value_basis_first_order.shape[0]) * 0.02
+            torch.randn(in_channels, self.value_basis_first_order.shape[0]) * 0.02
         )
         self.value_matrix_second_order_params = nn.Parameter(
-            torch.randn(self.value_basis_second_order.shape[0]) * 0.02
+            torch.randn(in_channels, self.value_basis_second_order.shape[0]) * 0.02
         )
 
     def W_K(self, x):
@@ -149,26 +149,55 @@ class SelfAttentionBlock(nn.Module):
         print("Attention shape: ", attention.shape)
 
         # 3. Compute Values using Equivariant Kernel W_V(u)
-        # W_V(u) = W0 + W1*u1 + W2*u2 ... (Taylor Expansion) [cite: 309, 1158]
-        # For simplicity, we implement W_V(u) as a linear combination of equivariant bases
-        W_V_u = torch.einsum(
-            "h b, b i j -> h i j", self.kernel_coeffs, self.kernel_bases
+        # W_V(u) = W0 + W1*u1 + W2*u2 ... (Taylor Expansion)
+
+        print("rel_pos_u shape: ", rel_pos_u.shape)
+        u_0 = rel_pos_u[..., 0]
+        u_1 = rel_pos_u[..., 1]
+        u_0_squared = u_0**2
+        u_1_squared = u_1**2
+        u_0_u_1 = (
+            2 * u_0 * u_1
+        )  # This 2 factor i think is fundamental, goes back to the SVD solution and form of F for the second order
+
+        zero_order = torch.einsum(
+            "cb,boij->coij",
+            self.value_matrix_zero_order_params,
+            self.value_basis_zero_order,
+        ).squeeze(1)  # [N, N]
+
+        first_order = torch.einsum(
+            "cb,boij,vno->vncij",
+            self.value_matrix_first_order_params,
+            self.value_basis_first_order,
+            rel_pos_u,
         )
+
+        second_order = torch.einsum(
+            "cb,boij,vno->vncij",
+            self.value_matrix_second_order_params,
+            self.value_basis_second_order,
+            torch.stack([u_0_squared, u_1_squared, u_0_u_1], dim=-1),
+        )
+
+        value_kernel = (
+            zero_order.unsqueeze(0).unsqueeze(0) + first_order + second_order
+        )  # [in_channels, N_v, Max_Neigh, N, N]
 
         # Apply value function to transported features
         # V = W_V(u) * f_prime_q
-        f_prime_q_split = f_prime_q.view(N_v, -1, -1, self.N)
-        values = torch.einsum("hij, vncj -> vnhci", W_V_u, f_prime_q_split)
-        values = values.reshape(N_v, -1, self.n_heads, -1)
+        f_prime_q = f_prime_q.view(N_v, -1, self.in_channels, self.N)
+
+        values = torch.einsum("vncij,vncj->vnci", value_kernel, f_prime_q)
 
         # 4. Aggregation
-        out = torch.einsum("vnh, vnhd -> vhd", attn_weights, values)
-        return out.reshape(N_v, -1)
+        out = torch.einsum("vn,vnci->vci", attention, values)  # [N_v, in_channels, N]
+        return out
 
 
 if __name__ == "__main__":
     # I want to check that if i rotate an input (x,y,z) then apply the layer i get a permutation of the output fields:
-    def check_equivariance():
+    def check_equivariance_l2r():
         def rotate_input(x, theta):
             # Rotate around the z-axis by angle theta
             cos_theta = torch.cos(theta)
