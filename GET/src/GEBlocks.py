@@ -47,7 +47,7 @@ class GELocalToRegularLinearBlock(nn.Module):
 
         # 3. Apply the linear transformation to the input features
         # (B, P, 3) @ (3, channels*N) -> (B, P, channels*N)
-        out = torch.matmul(x, W_final.t())
+        out = torch.matmul(x, W_final.t()).view(x.shape[0], self.channels, self.N)
 
         return out
 
@@ -116,7 +116,7 @@ class GESelfAttentionBlock(nn.Module):
             parallel_transport_matrices: [N_v, Max_Neighbors, N, N] - rho_tilde(theta)
             rel_pos_u: [N_v, Max_Neighbors, 2] - Logarithmic map coordinates u_q
         """
-        N_v, _ = x.shape
+        N_v, chan, n = x.shape
 
         # 1. Parallel Transport neighbors to center frame
         # x_neighbors shape: [N_v, Max_N, in_channels * N]
