@@ -1,6 +1,5 @@
 from os import path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import open3d as o3d
 import potpourri3d as pp3d
@@ -10,6 +9,10 @@ from tqdm import tqdm
 
 
 class MeshPreprocessor:
+    """
+    A class for preprocessing mesh data.
+    """
+
     def __init__(self, mesh):
         self.mesh = mesh
 
@@ -22,10 +25,13 @@ class MeshPreprocessor:
         return f"MeshPreprocessor(mesh with {len(self.mesh.vertices)} vertices and {len(self.mesh.faces)} faces)"
 
     def simplify_mesh(self, mesh_path, subsample):
+        """
+        Simplify the mesh by subsampling it and scaling the sufrace area to 1.
+        """
         # Load the mesh
         mesh = trimesh.load(mesh_path)
 
-        # Subsample the mesh using quadric decimation to reduce the number of vertices while preserving the overall shape
+        # Subsample the mesh using quadric decimation to reduce the number of vertices
         simplified_mesh = mesh.simplify_quadric_decimation(percent=1 - subsample)
 
         #  Normalize surface area to 1
@@ -35,25 +41,20 @@ class MeshPreprocessor:
 
         return simplified_mesh
 
-    def compute_geodesic_neighborhood(self, p_idx, radius):
-
-        solver = pp3d.MeshHeatMethodDistanceSolver(self.mesh.vertices, self.mesh.faces)
-
-        # 3. Compute distances from a source vertex p (index p_idx)
-        distances = solver.compute_distance(p_idx)
-
-        # 4. Select vertices within the RADIUS geodesic radius
-        neighbor_indices = np.where(distances <= radius)[0]
-        return neighbor_indices
-
     def compute_log_and_ptransport(self, radius, max_neighbors):
+        """
+        Efficiently compute the log map and parallel transport angle for each vertex to its neighbors within a given radius,
+        capping the number of neighbors to max_neighbors.
+        """
+
         vertices = self.mesh.vertices.astype(np.float32)
         num_vertices = len(vertices)
 
+        # Prepares the solvers
         dist_solver = pp3d.MeshHeatMethodDistanceSolver(vertices, self.mesh.faces)
         vector_solver = pp3d.MeshVectorHeatSolver(vertices, self.mesh.faces)
 
-        # Get the exact basis used by the solver for log-maps and transport
+        # Get the exact basis used by the solver for log-maps and transport. Used to compute features
         basis_x, basis_y, normals = vector_solver.get_tangent_frames()
 
         # Project global coordinates into this local gauge: [<p,x>, <p,y>, <p,n>]. This is the GET original feature map
@@ -62,16 +63,15 @@ class MeshPreprocessor:
         local_z = np.einsum("ij,ij->i", vertices, normals)[:, np.newaxis]
         features = np.hstack([local_x, local_y, local_z]).astype(np.float32)
 
+        # Array to hold features, neighbors, log maps, parallel transport angles.
         data = []
 
-        # If you must do all-to-all transport, the most efficient way in
-        # potpourri3d is to iterate and use the pre-factored back-substitution.
         for i in range(num_vertices):
-            # 1. Distances and Log Map (Fast because solver is pre-factored)
+            # Distances and Log Map
             dists = dist_solver.compute_distance(i)
             log_map = vector_solver.compute_log_map(i)  # (N, 2)
 
-            # 2. Get neighbors
+            # Finds neighbors of vertex i (excluding itself)
             neighbor_indices = np.where(dists <= radius)[0]
             neighbor_indices = neighbor_indices[neighbor_indices != i]
 
@@ -81,19 +81,18 @@ class MeshPreprocessor:
                     np.argsort(dists[neighbor_indices])
                 ][:max_neighbors]
 
-            # 3. Parallel Transport
-            # We compute the transport from 'i' to its neighbors here.
-            # Note: transport(i->q) is the inverse of transport(q->i).
-            # We transport the basis vector [1,0] from center i to all neighbors.
+            # This transports a standard vector [1,0] from vertex i to all other vertices in the mesh
             transport_from_center = vector_solver.transport_tangent_vector(
                 i, [1.0, 0.0]
             )
 
-            # Extract angles for neighbors
+            # This only keeps the transported vectors from i to the neighbors
             v_neighbors = transport_from_center[neighbor_indices]
+
+            # This computes the angle
             g_pq = np.arctan2(v_neighbors[:, 1], v_neighbors[:, 0])
 
-            # g_qp (neighbor to center) is simply -g_pq
+            # To go from neighbor to i, it's the inverse of from i to neighbor
             g_qp = -g_pq
 
             data.append(
@@ -126,40 +125,24 @@ class MeshPreprocessor:
 
         self.mesh = clean_mesh
 
-    # Function to plot the neighbors of vertex 0, debug purposes:
-    def plot_neighbors(self, p_idx, distance, ax):
-        neighbor_indices = self.compute_geodesic_neighborhood(p_idx, distance)
-
-        ax.scatter(
-            self.mesh.vertices[neighbor_indices, 0],
-            self.mesh.vertices[neighbor_indices, 1],
-            self.mesh.vertices[neighbor_indices, 2],
-            color="red",
-            s=10,
-        )
-
-        # Plot the source vertex in blue
-        ax.scatter(
-            self.mesh.vertices[p_idx, 0],
-            self.mesh.vertices[p_idx, 1],
-            self.mesh.vertices[p_idx, 2],
-            color="k",
-            s=50,
-        )
-
 
 if __name__ == "__main__":
-    SUBSAMPLE = 0.2
-    RADIUS = 0.2
-    MAX_NEIGH = 300
+    SUBSAMPLE = 0.2  # Amount of subsampling (lower = less points)
+    RADIUS = 0.2  # Radius to build neighborhoods
+    MAX_NEIGH = 300  # Max neighbors for each vertex
 
     base = "../data/SHREC11_test_database_new/"
     paths = [i for i in range(0, 600) if not path.exists(f"../data/processed/T{i}.pt")]
 
     for j, filename in enumerate(tqdm(paths)):
+        # Initializes the preprocessor
         preprocessor = MeshPreprocessor.from_file(
             base + f"T{filename}.off", subsample=SUBSAMPLE
         )
+
+        # Subsampling often introduces non-manifold structures, we try to clean them up.
+        # Most of the meshes are fine with this process, however 7 of them ([5, 31, 100, 130, 324, 426, 533]) don't get cleaned up
+        # For these ones, i subsample at 10%, somehow it works better for them. Only 1 (130) keeps being broken, i remove it.
         try:
             data = preprocessor.compute_log_and_ptransport(
                 radius=RADIUS, max_neighbors=MAX_NEIGH
@@ -176,7 +159,7 @@ if __name__ == "__main__":
 
         N = len(data)  # number of vertices
 
-        # Preallocate tensors
+        # Preallocate tensors, useful to have this structure for parallel processing
         features = torch.zeros((N, 3), dtype=torch.float32)  # local features
         neighbors = torch.full((N, MAX_NEIGH), -1, dtype=torch.long)  # neighbor indices
         u_q = torch.zeros((N, MAX_NEIGH, 2), dtype=torch.float32)  # 2D vectors
@@ -193,15 +176,15 @@ if __name__ == "__main__":
             u = d["u_q"]
             g = d["g_qp"]
 
-            # store features
+            # Store features
             features[i] = torch.from_numpy(d["features"])
-            # store neighbor indices
+            # Store neighbor indices
             neighbors[i, :n] = torch.from_numpy(q_indices)
-            # store vectors
+            # Store vectors
             u_q[i, :n] = torch.from_numpy(u)
-            # store angles
+            # Store angles
             g_qp[i, :n] = torch.from_numpy(g)
-            # mask
+            # Store mask
             mask[i, :n] = True
 
         # Save as a PyTorch file
