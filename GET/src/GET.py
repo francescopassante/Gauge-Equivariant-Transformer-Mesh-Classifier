@@ -78,9 +78,15 @@ def train(model, dataloader, optimizer, criterion, device, epochs=1):
             f"Epoch {epoch + 1}/{epochs} finished in {epoch_time:.2f}s - avg loss: {epoch_loss:.4f}"
         )
 
-        save_path = f"model_final_epoch{epoch + 1}.pth"
-        torch.save(model.state_dict(), save_path)
-        print(f"Saved model state_dict to {save_path}")
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "loss": loss.item(),
+        }
+        save_path = f"checkpoint_final_epoch{epoch}.pth"
+        torch.save(checkpoint, f"checkpoint_epoch_{epoch}.pth")
+        print(f"Saved checkpoint to {save_path}")
 
     return loss_hist
 
