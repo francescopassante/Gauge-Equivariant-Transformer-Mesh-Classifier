@@ -103,28 +103,29 @@ def load_data(mesh_directory, labels_file, N, train_percent):
     return train_loader, test_loader
 
 
-device = "mps"
+if __name__ == "__main__"
+    device = "mps"
 
-train_loader, test_loader = load_data(
-    mesh_directory="../data/processed/",
-    labels_file="../data/For_evaluation/test.cla",
-    N=9,
-    train_percent=0.8,
-)
+    train_loader, test_loader = load_data(
+        mesh_directory="../data/processed/",
+        labels_file="../data/For_evaluation/test.cla",
+        N=9,
+        train_percent=0.8,
+    )
 
-print(len(train_loader), len(test_loader))
+    print(len(train_loader), len(test_loader))
 
-model = GETClassifier(N=9, channels=12, out_classes=30).to(device)
+    model = GETClassifier(N=9, channels=12, out_classes=30).to(device)
 
-criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss()
 
-optimizer = optim.Adam(model.parameters(), lr=0.005)
+    optimizer = optim.Adam(model.parameters(), lr=0.005)
 
-train(
-    model=model,
-    dataloader=train_loader,
-    optimizer=optimizer,
-    criterion=criterion,
-    device=device,
-    epochs=1,
-)
+    train(
+        model=model,
+        dataloader=train_loader,
+        optimizer=optimizer,
+        criterion=criterion,
+        device=device,
+        epochs=1,
+    )
