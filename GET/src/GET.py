@@ -103,7 +103,7 @@ def load_data(mesh_directory, labels_file, N, train_percent):
     return train_loader, test_loader
 
 
-if __name__ == "__main__"
+if __name__ == "__main__":
     device = "mps"
 
     train_loader, test_loader = load_data(
