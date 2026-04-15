@@ -23,26 +23,26 @@ class GETClassifier(nn.Module):
         self.fc = nn.Linear(channels, out_classes)
 
     def forward(self, x, neighbors, mask, parallel_transport_matrices, rel_pos_u):
-        # x: (B, N_v, 3)
+        # x: (1, N_v, 3)
 
         # Local to regular transformation
-        x0 = self.local_to_regular(x)  # (B, N_v, channels, N)
-        x0 = torch.relu(x0)  # (B, N_v, channels, N)
+        x0 = self.local_to_regular(x)  # (N_v, channels, N)
+        x0 = torch.relu(x0)  # (N_v, channels, N)
 
         # Self-attention
         x = self.self_attention1(
             x0, neighbors, mask, parallel_transport_matrices, rel_pos_u
-        )  # (B, N_v, in_channels, N)
-        x = torch.relu(x)  # (B, N_v, in_channels, N)
+        )  # (N_v, in_channels, N)
+        x = torch.relu(x)  # (N_v, in_channels, N)
 
         x = self.self_attention2(
             x, neighbors, mask, parallel_transport_matrices, rel_pos_u
-        )  # (B, N_v, in_channels, N)
+        )  # (N_v, in_channels, N)
         x = x + x0  # Residual connection
 
-        x = self.group_pool(x)  # (B, N_v, in_channels)
-        x = self.global_average_pool(x)  # (B, in_channels)
-        return self.fc(x)
+        x = self.group_pool(x)  # (N_v, in_channels)
+        x = self.global_average_pool(x)  # (in_channels)
+        return self.fc(x)  # (classes)
 
 
 def train(model, dataloader, optimizer, criterion, device, epochs=1):
@@ -64,7 +64,7 @@ def train(model, dataloader, optimizer, criterion, device, epochs=1):
 
             optimizer.zero_grad()
             outputs = model(x, neighbors, mask, parallel_transport_matrices, rel_pos_u)
-            probs = torch.softmax(outputs, dim=1)
+            probs = torch.softmax(outputs, dim=0)
             loss = criterion(probs, labels)
             loss.backward()
             optimizer.step()
@@ -107,8 +107,8 @@ if __name__ == "__main__":
     device = "mps"
 
     train_loader, test_loader = load_data(
-        mesh_directory="../data/processed/",
-        labels_file="../data/For_evaluation/test.cla",
+        mesh_directory="../data/SHREC11/processed/",
+        labels_file="../data/SHREC11/classes.txt",
         N=9,
         train_percent=0.8,
     )
