@@ -1,2 +1,2 @@
-# equivariant-transformers-for-lattice-gauge-theories
-Git repository for my master's thesis in Physics @ Sapienza University of Rome. Thesis supervisor: Prof. Stefano Giagu
+# GETMeshClassificator
+Gauge equivariant transformer for classification of various meshes from the SHREC11 dataset
