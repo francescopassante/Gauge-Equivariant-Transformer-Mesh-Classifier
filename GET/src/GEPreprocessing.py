@@ -128,8 +128,8 @@ class MeshPreprocessor:
 
 if __name__ == "__main__":
     SUBSAMPLE = 0.2  # Amount of subsampling (lower = less points)
-    RADIUS = 0.2  # Radius to build neighborhoods
-    MAX_NEIGH = 300  # Max neighbors for each vertex
+    RADIUS = 0.1  # Radius to build neighborhoods
+    MAX_NEIGH = 50  # Max neighbors for each vertex
 
     base = "../data/SHREC11_test_database_new/"
     paths = [i for i in range(0, 600) if not path.exists(f"../data/processed/T{i}.pt")]
@@ -196,7 +196,7 @@ if __name__ == "__main__":
                 "g_qp": g_qp,
                 "mask": mask,
             },
-            f"../data/processed/T{filename}.pt",
+            f"../data/SHREC11/processed/T{filename}.pt",
         )
         # Save the preprocessed mesh as well, for reference (optional)
-        preprocessor.mesh.export(f"../data/processed/T{filename}.off")
+        preprocessor.mesh.export(f"../data/SHREC11/processed/T{filename}.off")

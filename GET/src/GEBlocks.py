@@ -435,18 +435,13 @@ if __name__ == "__main__":
     N = 9
     channels = 12
 
-    # l2rBlock = GELocalToRegularLinearBlock(N, channels=channels)
+    l2rBlock = GELocalToRegularLinearBlock(N, channels=channels)
 
-    # r2r = GEUtils.RegularToRegular(N)
-    # parallel_transport_matrices = r2r.extended_regular_representation(
-    #     parallel_transport_angles
-    # )
-
-    angles = torch.randint(0, N, (x.shape[0],)) * 2 * np.pi / N
-    check_gauge_invariance(
-        N=N, angles=angles, channels=channels, data=data, verbose=True
+    r2r = GEUtils.RegularToRegular(N)
+    parallel_transport_matrices = r2r.extended_regular_representation(
+        parallel_transport_angles
     )
 
-    # sa = GESelfAttentionBlock(N, in_channels=channels)
+    sa = GESelfAttentionBlock(N, in_channels=channels)
 
-    # out = sa(l2rBlock(x), neighbors, mask, parallel_transport_matrices, rel_pos_u)
+    out = sa(l2rBlock(x), neighbors, mask, parallel_transport_matrices, rel_pos_u)
