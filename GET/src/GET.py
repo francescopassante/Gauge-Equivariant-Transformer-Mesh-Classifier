@@ -45,14 +45,19 @@ class GETClassifier(nn.Module):
         return self.fc(x)  # (classes)
 
 
-def train(model, dataloader, optimizer, criterion, device, epochs=1):
+def train(
+    model, dataloader, optimizer, criterion, device, epochs=1, accumulation_steps=16
+):
     model.train()
     loss_hist = []
+
     for epoch in range(epochs):
-        epoch_start = time.time()
         total_loss = 0.0
-        for mesh in tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}"):
-            x, neighbors, mask, parallel_transport_matrices, rel_pos_u, labels = mesh
+
+        # Start with zeroed gradients for the first accumulation block
+        optimizer.zero_grad()
+
+        for i, mesh in enumerate(tqdm(dataloader, desc=f"Epoch {epoch + 1}/{epochs}")):
             x = mesh["x"].to(device).squeeze(0)
             neighbors = mesh["neighbors"].to(device).squeeze(0)
             mask = mesh["mask"].to(device).squeeze(0)
@@ -62,30 +67,36 @@ def train(model, dataloader, optimizer, criterion, device, epochs=1):
             rel_pos_u = mesh["rel_pos"].to(device).squeeze(0)
             labels = mesh["label"].to(device).long().squeeze(0)
 
-            optimizer.zero_grad()
+            # Forward
             outputs = model(x, neighbors, mask, parallel_transport_matrices, rel_pos_u)
-            loss = criterion(outputs.unsqueeze(0), labels.unsqueeze(0))
-            loss.backward()
-            optimizer.step()
+            raw_loss = criterion(outputs.unsqueeze(0), labels.unsqueeze(0))
 
-            total_loss += loss.item()
+            # Scale the loss for gradient accumulation
+            scaled_loss = raw_loss / accumulation_steps
+            scaled_loss.backward()
 
-        epoch_time = time.time() - epoch_start
+            # Accumulate the raw (unscaled) loss for logging
+            total_loss += raw_loss.item()
+
+            # Step and zero gradients at the accumulation boundary (or final batch)
+            if (i + 1) % accumulation_steps == 0 or (i + 1) == len(dataloader):
+                optimizer.step()
+                optimizer.zero_grad()
+
+        # Average epoch loss (uses unscaled batch losses)
         epoch_loss = total_loss / len(dataloader)
         loss_hist.append(epoch_loss)
-        print(
-            f"Epoch {epoch + 1}/{epochs} finished in {epoch_time:.2f}s - avg loss: {epoch_loss:.4f}"
-        )
 
-        # checkpoint = {
-        #     "epoch": epoch,
-        #     "model_state_dict": model.state_dict(),
-        #     "optimizer_state_dict": optimizer.state_dict(),
-        #     "loss": loss.item(),
-        # }
-        # save_path = f"checkpoint_epoch{epoch}.pth"
-        # torch.save(checkpoint, save_path)
-        # print(f"Saved checkpoint to {save_path}")
+        # Save checkpoint with meaningful loss value (epoch average)
+        checkpoint = {
+            "epoch": epoch,
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "loss": epoch_loss,
+        }
+        save_path = "checkpoint.pth"
+        torch.save(checkpoint, save_path)
+        print(f"Saved checkpoint to {save_path} (epoch_loss={epoch_loss:.6f})")
 
     return loss_hist
 

@@ -74,12 +74,8 @@ class GESelfAttentionBlock(nn.Module):
         self.register_buffer("reg_to_reg_basis", torch.stack(basis))
 
         # Query and Key coefficients are [in_channels, len_basis] because we use a linear comb of the basis for each channel, then sum
-        self.query_coeffs = nn.Parameter(torch.empty(in_channels, len(basis)))
-        self.key_coeffs = nn.Parameter(torch.empty(in_channels, len(basis)))
-
-        # Li inizializzi (Kaiming è un'ottima scelta per rompere la simmetria)
-        nn.init.kaiming_normal_(self.query_coeffs, mode="fan_out", nonlinearity="relu")
-        nn.init.kaiming_normal_(self.key_coeffs, mode="fan_out", nonlinearity="relu")
+        self.query_coeffs = nn.Parameter(torch.randn(in_channels, len(basis)) * 0.02)
+        self.key_coeffs = nn.Parameter(torch.randn(in_channels, len(basis)) * 0.02)
 
         # The value matrix is given by a second order Taylor expansion in the relative position u.
         # The Taylor coefficients (matrices) must satisfy the equivariance condition in Eqn. (78) of the paper.
@@ -121,7 +117,7 @@ class GESelfAttentionBlock(nn.Module):
     def forward(self, x, neighbors, mask, parallel_transport_matrices, rel_pos_u):
         """
         Args:
-            x: [N_v, in_channels * N] - Center features
+            x: [N_v, in_channels, N] - Center features
             neighbors: [N_v, MAX_NEIGH] - Indices of neighbors
             mask: [N_v, MAX_NEIGH] - Binary mask for valid neighbors
             parallel_transport_matrices: [N_v, MAX_NEIGH, N, N] - rho_tilde(theta)
@@ -129,13 +125,9 @@ class GESelfAttentionBlock(nn.Module):
         """
         N_v, chan, n = x.shape
 
-        # x_neigh : [N_v, MAX_NEIGH, channels, N]
-        x_neigh = x[neighbors]
-        x_neigh = x_neigh.view(N_v, -1, self.in_channels, self.N)
-
         # Zero-out "fake neighbors" so that x_neigh[v][n] is zero if n > actual number of neighbors for vertex v
-        mask_expanded = mask.unsqueeze(-1).unsqueeze(-1)  # [N_v, Max_N, 1, 1]
-        x_neigh = x_neigh * mask_expanded
+        x_neigh = x[neighbors].view(N_v, -1, self.in_channels, self.N)
+        x_neigh.masked_fill_(~mask.unsqueeze(-1).unsqueeze(-1), 0.0)
 
         # Parallel transport features of neighbors to center vertices
         f_prime_q = torch.einsum(
@@ -180,12 +172,11 @@ class GESelfAttentionBlock(nn.Module):
             self.value_basis_first_order,
         )
 
-        W1_local = torch.einsum("coij, vno -> vncij", W1, rel_pos_u)  # [V, N, C, I, J]
-        values += torch.einsum("vncij, vncj -> vnci", W1_local, f_prime_q)
+        # Contract C and J dimensions first -> Shape: [V, N, C, O, I]
+        temp_w1 = torch.einsum("coij, vncj -> vncoi", W1, f_prime_q)
 
-        del W0
-        del W1  # Forza la liberazione della memoria, visto che non servono
-        del W1_local
+        # 2. Contract the Order (O) dimension -> Shape: [V, N, C, I]
+        values += torch.einsum("vncoi, vno -> vnci", temp_w1, rel_pos_u)
 
         W2 = torch.einsum(
             "cb, boij -> coij",
@@ -197,8 +188,6 @@ class GESelfAttentionBlock(nn.Module):
 
         W2_local = torch.einsum("coij, vno -> vncij", W2, u_quad)  # [V, N, C, I, J]
         values += torch.einsum("vncij, vncj -> vnci", W2_local, f_prime_q)
-        del W2
-        del W2_local  # Forza la liberazione
 
         # Aggregation
         out = torch.einsum("vn,vnci->vci", attention, values)  # [N_v, in_channels, N]
@@ -333,7 +322,7 @@ if __name__ == "__main__":
         print(out := group_pool(input))
         print(out.shape)
 
-        global_pool = GEGlobalAveragePooling(in_channels=3)
+        global_pool = GEGlobalAveragePooling()
         print(out := global_pool(out))
         print(out.shape)
 

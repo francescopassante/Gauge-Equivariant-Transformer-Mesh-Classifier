@@ -1,5 +1,6 @@
 from os import path
 
+import GEUtils
 import numpy as np
 import open3d as o3d
 import potpourri3d as pp3d
@@ -18,23 +19,17 @@ class MeshPreprocessor:
 
     @classmethod
     def from_file(cls, mesh_path, subsample):
-        mesh = cls.simplify_mesh(cls, mesh_path, subsample)
+        mesh = cls.simplify_mesh(mesh_path, subsample)
         return cls(mesh)
 
-    def __str__(self):
-        return f"MeshPreprocessor(mesh with {len(self.mesh.vertices)} vertices and {len(self.mesh.faces)} faces)"
-
-    def simplify_mesh(self, mesh_path, subsample):
+    @staticmethod
+    def simplify_mesh(mesh_path, subsample):
         """
-        Simplify the mesh by subsampling it and scaling the sufrace area to 1.
+        Load and simplify a mesh, then normalize surface area to 1.
         """
-        # Load the mesh
         mesh = trimesh.load(mesh_path)
-
-        # Subsample the mesh using quadric decimation to reduce the number of vertices
         simplified_mesh = mesh.simplify_quadric_decimation(percent=1 - subsample)
 
-        #  Normalize surface area to 1
         area = simplified_mesh.area
         if area > 0:
             simplified_mesh.apply_scale(1 / np.sqrt(area))
@@ -57,7 +52,7 @@ class MeshPreprocessor:
         # Get the exact basis used by the solver for log-maps and transport. Used to compute features
         basis_x, basis_y, normals = vector_solver.get_tangent_frames()
 
-        # Project global coordinates into this local gauge: [<p,x>, <p,y>, <p,n>]. This is the GET original feature map
+        # Project global coordinates into this local gauge (GET original feature map)
         local_x = np.einsum("ij,ij->i", vertices, basis_x)[:, np.newaxis]
         local_y = np.einsum("ij,ij->i", vertices, basis_y)[:, np.newaxis]
         local_z = np.einsum("ij,ij->i", vertices, normals)[:, np.newaxis]
@@ -132,75 +127,64 @@ if __name__ == "__main__":
     MAX_NEIGH = 50  # Max neighbors for each vertex
 
     base = "../data/meshes/"
-    paths = [
-        i
-        for i in range(0, 600)
-        if not path.exists(f"../data/SHREC11/processed/T{i}.pt")
-    ]
+    out_dir = "../data/SHREC11/processed/"
 
-    for j, filename in enumerate(tqdm(paths)):
-        # Initializes the preprocessor
-        preprocessor = MeshPreprocessor.from_file(
-            base + f"T{filename}.off", subsample=SUBSAMPLE
-        )
+    # Find meshes that still need processing
+    to_process = [i for i in range(0, 600) if not path.exists(f"{out_dir}T{i}.pt")]
 
-        # Subsampling often introduces non-manifold structures, we try to clean them up.
-        # Most of the meshes are fine with this process, however 7 of them ([5, 31, 100, 130, 324, 426, 533]) don't get cleaned up
-        # For these ones, i subsample at 10%, somehow it works better for them. Only 1 (130) keeps being broken, i remove it.
+    for idx in tqdm(to_process):
+        mesh_path = f"{base}T{idx}.off"
+
+        # Load & simplify (if this fails, let exception propagate)
+        preprocessor = MeshPreprocessor.from_file(mesh_path, subsample=SUBSAMPLE)
+
+        # Try computing data; if it fails try cleaning once then recompute
         try:
-            data = preprocessor.compute_log_and_ptransport(
+            per_vertex = preprocessor.compute_log_and_ptransport(
                 radius=RADIUS, max_neighbors=MAX_NEIGH
             )
         except Exception:
+            # attempt a single mesh cleaning pass then re-run
             preprocessor.clean_mesh()
-            try:
-                data = preprocessor.compute_log_and_ptransport(
-                    radius=RADIUS, max_neighbors=MAX_NEIGH
-                )
-            except Exception as e:
-                print(f"Failed to process T{filename}.off after cleaning: {e}")
-                continue
+            per_vertex = preprocessor.compute_log_and_ptransport(
+                radius=RADIUS, max_neighbors=MAX_NEIGH
+            )
 
-        N = len(data)  # number of vertices
+        N = len(per_vertex)  # number of vertices in the processed mesh
 
-        # Preallocate tensors, useful to have this structure for parallel processing
-        features = torch.zeros((N, 3), dtype=torch.float32)  # local features
-        neighbors = torch.full((N, MAX_NEIGH), -1, dtype=torch.long)  # neighbor indices
-        u_q = torch.zeros((N, MAX_NEIGH, 2), dtype=torch.float32)  # 2D vectors
-        g_qp = torch.zeros((N, MAX_NEIGH), dtype=torch.float32)  # cos/sin angles
-        mask = torch.zeros((N, MAX_NEIGH), dtype=torch.bool)  # valid neighbors mask
+        # Allocate fixed-size tensors
+        features = torch.zeros((N, 3), dtype=torch.float32)
+        neighbors = torch.full((N, MAX_NEIGH), -1, dtype=torch.long)
+        u_q = torch.zeros((N, MAX_NEIGH, 2), dtype=torch.float32)
+        g_qp = torch.zeros((N, MAX_NEIGH), dtype=torch.float32)
+        mask = torch.zeros((N, MAX_NEIGH), dtype=torch.bool)
 
-        # Fill tensors
-        for i, d in enumerate(data):
-            q_indices = d["q_indices"]
-            n = min(
-                len(q_indices), MAX_NEIGH
-            )  # number of neighbors (capped at MAX_NEIGH)
+        for v, d in enumerate(per_vertex):
+            q_idx = d["q_indices"]
+            k = min(len(q_idx), MAX_NEIGH)
 
-            u = d["u_q"]
-            g = d["g_qp"]
+            features[v] = torch.from_numpy(d["features"])
+            neighbors[v, :k] = torch.from_numpy(q_idx)
+            u_q[v, :k] = torch.from_numpy(d["u_q"])
+            g_qp[v, :k] = torch.from_numpy(d["g_qp"])
+            mask[v, :k] = True
 
-            # Store features
-            features[i] = torch.from_numpy(d["features"])
-            # Store neighbor indices
-            neighbors[i, :n] = torch.from_numpy(q_indices)
-            # Store vectors
-            u_q[i, :n] = torch.from_numpy(u)
-            # Store angles
-            g_qp[i, :n] = torch.from_numpy(g)
-            # Store mask
-            mask[i, :n] = True
+        # Precompute parallel transport matrices for the mesh.
+        # This call may raise if shapes or values are unexpected; do not swallow exceptions.
+        r2r = GEUtils.RegularToRegular(N)
+        # g_qp is a torch tensor of shape (N, MAX_NEIGH)
+        parallel_transport = r2r.extended_regular_representation(g_qp)
 
-        # Save as a PyTorch file
-        torch.save(
-            {
-                "features": features,
-                "neighbors": neighbors,
-                "u_q": u_q,
-                "g_qp": g_qp,
-                "mask": mask,
-            },
-            f"../data/SHREC11/processed/T{filename}.pt",
-        )
-        # Save the preprocessed mesh as well, for reference (optional)
-        preprocessor.mesh.export(f"../data/SHREC11/processed/T{filename}.off")
+        save_dict = {
+            "features": features,
+            "neighbors": neighbors,
+            "u_q": u_q,
+            "g_qp": g_qp,
+            "mask": mask,
+            "parallel_transport": parallel_transport,
+        }
+
+        torch.save(save_dict, f"{out_dir}T{idx}.pt")
+        preprocessor.mesh.export(f"{out_dir}T{idx}.off")
+
+    print("Preprocessing completed.")
