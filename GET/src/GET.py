@@ -9,24 +9,23 @@ from tqdm import tqdm
 
 
 class GETClassifier(nn.Module):
-    def __init__(self, N, channels, heads, out_classes):
+    def __init__(self, N, channels, heads, out_classes, num_blocks=1):
         super().__init__()
         self.local_to_regular = GEBlocks.GELocalToRegularLinearBlock(N, channels)
 
-        self.resnet_block = GEBlocks.GEResNetBlock(N, channels, heads)
+        self.blocks = nn.ModuleList([
+            GEBlocks.GEResNetBlock(N, channels, heads) for _ in range(num_blocks)
+        ])
 
         self.group_pool = GEBlocks.GEGroupPooling()
         self.global_average_pool = GEBlocks.GEGlobalAveragePooling()
         self.fc = nn.Linear(channels, out_classes)
 
     def forward(self, x, neighbors, mask, parallel_transport_matrices, rel_pos_u):
-        x = self.local_to_regular(x)
-        x = torch.relu(x)
+        x = torch.relu(self.local_to_regular(x))
 
-        # Pass through the ResNet Block
-        x = self.resnet_block(
-            x, neighbors, mask, parallel_transport_matrices, rel_pos_u
-        )
+        for block in self.blocks:
+            x = block(x, neighbors, mask, parallel_transport_matrices, rel_pos_u)
 
         x = self.group_pool(x)
         x = self.global_average_pool(x)
@@ -45,8 +44,6 @@ def train(
 ):
     model.train()
     loss_hist = []
-    r2r = GEUtils.RegularToRegular(model.local_to_regular.N)
-    r2r.A = r2r.A.to(device)
 
     for epoch in range(epochs):
         total_loss = 0.0
@@ -57,15 +54,11 @@ def train(
             x = mesh["x"].to(device).squeeze(0)
             neighbors = mesh["neighbors"].to(device).squeeze(0)
             mask = mesh["mask"].to(device).squeeze(0)
-            parallel_transport_angles = (
-                mesh["parallel_transport_angles"].to(device).squeeze(0)
+            parallel_transport_matrices = (
+                mesh["parallel_transport_matrices"].to(device).squeeze(0)
             )
             rel_pos_u = mesh["rel_pos"].to(device).squeeze(0)
             labels = mesh["label"].to(device).long().squeeze(0)
-
-            parallel_transport_matrices = r2r.extended_regular_representation(
-                parallel_transport_angles
-            )
 
             # Forward
             outputs = model(x, neighbors, mask, parallel_transport_matrices, rel_pos_u)
@@ -107,7 +100,7 @@ def train(
     return loss_hist
 
 
-def load_data(mesh_directory, labels_file, N, train_percent):
+def load_data(mesh_directory, labels_file, N, train_percent, device="cpu"):
     full_dataset = GEData.MeshDataset(mesh_directory, labels_file, N)
 
     train_size = int(train_percent * len(full_dataset))
@@ -115,8 +108,14 @@ def load_data(mesh_directory, labels_file, N, train_percent):
 
     train_dataset, test_dataset = random_split(full_dataset, [train_size, test_size])
 
-    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+    train_loader = DataLoader(
+        train_dataset, batch_size=1, shuffle=True,
+        num_workers=2, pin_memory=(device == "cuda"),
+    )
+    test_loader = DataLoader(
+        test_dataset, batch_size=1, shuffle=False,
+        num_workers=2, pin_memory=(device == "cuda"),
+    )
 
     return train_loader, test_loader
 
@@ -125,11 +124,7 @@ def check_gauge_invariance(data, N, channels, heads):
 
     x = data["x"].squeeze(0)
     neighbors = data["neighbors"].squeeze(0)
-    parallel_transport_angles = data["parallel_transport_angles"].squeeze(0)
-
-    parallel_transport_matrices = GEUtils.RegularToRegular(
-        N
-    ).extended_regular_representation(parallel_transport_angles)
+    parallel_transport_matrices = data["parallel_transport_matrices"].squeeze(0)
 
     rel_pos_u = data["rel_pos"].squeeze(0)
     mask = data["mask"].squeeze(0)
@@ -183,16 +178,17 @@ if __name__ == "__main__":
         labels_file="../data/SHREC11_200NEIGH/classes.txt",
         N=9,
         train_percent=0.002,
+        device=device,
     )
 
     print(len(train_loader), len(test_loader))
 
-    model = GETClassifier(N=9, channels=12, heads=2, out_classes=30).to(device)
+    model = GETClassifier(N=9, channels=12, heads=2, out_classes=30, num_blocks=1).to(device)
     # model = torch.compile(model)
 
     criterion = nn.CrossEntropyLoss()
 
-    optimizer = optim.Adam(model.parameters(), lr=3e-2, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-4)
 
     # scheduler to divide by 10 the lr at the 41st epoch
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)

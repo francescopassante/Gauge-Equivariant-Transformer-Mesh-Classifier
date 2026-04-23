@@ -7,6 +7,10 @@ from torch.utils.data import Dataset
 
 class MeshDataset(Dataset):
     def __init__(self, mesh_directory, labels_file, N):
+        self.base_path = mesh_directory
+        self.N = N
+        self._r2r = GEUtils.RegularToRegular(N)
+
         # Collect existing processed files named T{idx}.pt (original dataset up to 600)
         self.filenumbers = [
             i for i in range(600) if path.exists(f"{self.base_path}T{i}.pt")
@@ -29,13 +33,17 @@ class MeshDataset(Dataset):
 
     def __getitem__(self, idx):
         file_index = self.filenumbers[idx]
-        data = torch.load(f"{self.base_path}T{file_index}.pt")
+        data = torch.load(f"{self.base_path}T{file_index}.pt", weights_only=False)
+
+        parallel_transport_matrices = self._r2r.extended_regular_representation(
+            data["g_qp"]
+        )
 
         return {
             "x": data["features"],
             "neighbors": data["neighbors"],
             "mask": data["mask"],
-            "parallel_transport_angles": data["g_qp"],
+            "parallel_transport_matrices": parallel_transport_matrices,
             "rel_pos": data["u_q"],
             "label": self.labels[file_index],
             "filenumber": file_index,

@@ -132,8 +132,7 @@ class RegularToRegular:
             A.T,
         )
 
-        # Rounding to avoid small numerical instabilities
-        return rho.round(decimals=6)
+        return rho
 
 
 class LocalToRegular:
