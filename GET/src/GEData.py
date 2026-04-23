@@ -6,15 +6,19 @@ from torch.utils.data import Dataset
 
 
 class MeshDataset(Dataset):
-    def __init__(self, mesh_directory, labels_file, N):
+    def __init__(self, mesh_directory, labels_file, N, filenumbers=None):
         self.base_path = mesh_directory
         self.N = N
         self._r2r = GEUtils.RegularToRegular(N)
 
-        # Collect existing processed files named T{idx}.pt (original dataset up to 600)
-        self.filenumbers = [
-            i for i in range(600) if path.exists(f"{self.base_path}T{i}.pt")
-        ]
+        if filenumbers is not None:
+            # Use the provided list directly (e.g. when resuming a session)
+            self.filenumbers = list(filenumbers)
+        else:
+            # Scan directory for all available processed files
+            self.filenumbers = [
+                i for i in range(600) if path.exists(f"{self.base_path}T{i}.pt")
+            ]
 
         # Load labels file
         with open(labels_file) as f:
