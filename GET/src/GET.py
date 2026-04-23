@@ -195,42 +195,52 @@ def train(
     return train_loss_hist, val_loss_hist
 
 
-def load_data(mesh_directory, labels_file, N, train_percent, device="cpu"):
+def load_data(mesh_directory, labels_file, N, train_percent, val_percent=0.15, device="cpu"):
     """
-    Create train/test DataLoaders from a random split of the dataset.
+    Create train/val/test DataLoaders from a single random split of the dataset.
 
-    Returns:
-        (train_loader, test_loader, train_filenumbers, test_filenumbers)
+    Args:
+        train_percent:  Fraction of the dataset used for training.
+        val_percent:    Fraction used for validation (drives early stopping).
+                        The remainder becomes the test set.
 
-    The filenumber lists can be saved and passed to load_data_from_session()
-    to reproduce the exact same split later.
+    Returns a dict with keys:
+        "train_loader", "val_loader", "test_loader"
+        "train_filenumbers", "val_filenumbers", "test_filenumbers"
+
+    Pass the filenumber lists to train() so they are saved in every checkpoint
+    and the exact split can be reproduced with load_data_from_session().
     """
+    assert train_percent + val_percent < 1.0, "train + val must be < 1"
+
     full_dataset = GEData.MeshDataset(mesh_directory, labels_file, N)
+    n = len(full_dataset)
 
-    train_size = int(train_percent * len(full_dataset))
-    test_size = len(full_dataset) - train_size
+    train_size = int(train_percent * n)
+    val_size   = int(val_percent * n)
+    test_size  = n - train_size - val_size
 
-    train_subset, test_subset = random_split(full_dataset, [train_size, test_size])
-
-    train_filenumbers = [full_dataset.filenumbers[i] for i in train_subset.indices]
-    test_filenumbers = [full_dataset.filenumbers[i] for i in test_subset.indices]
-
-    train_loader = DataLoader(
-        train_subset,
-        batch_size=1,
-        shuffle=True,
-        num_workers=2,
-        pin_memory=(device == "cuda"),
-    )
-    test_loader = DataLoader(
-        test_subset,
-        batch_size=1,
-        shuffle=False,
-        num_workers=2,
-        pin_memory=(device == "cuda"),
+    train_subset, val_subset, test_subset = random_split(
+        full_dataset, [train_size, val_size, test_size]
     )
 
-    return train_loader, test_loader, train_filenumbers, test_filenumbers
+    def _filenums(subset):
+        return [full_dataset.filenumbers[i] for i in subset.indices]
+
+    def _loader(subset, shuffle):
+        return DataLoader(
+            subset, batch_size=1, shuffle=shuffle,
+            num_workers=2, pin_memory=(device == "cuda"),
+        )
+
+    return {
+        "train_loader":      _loader(train_subset, shuffle=True),
+        "val_loader":        _loader(val_subset,   shuffle=False),
+        "test_loader":       _loader(test_subset,  shuffle=False),
+        "train_filenumbers": _filenums(train_subset),
+        "val_filenumbers":   _filenums(val_subset),
+        "test_filenumbers":  _filenums(test_subset),
+    }
 
 
 def load_data_from_session(checkpoint_path, mesh_directory, labels_file, device="cpu"):
@@ -326,44 +336,22 @@ def check_gauge_invariance(data, N, channels, heads):
 if __name__ == "__main__":
     device = "mps"
 
-    train_loader, test_loader, train_filenumbers, test_filenumbers = load_data(
+    data = load_data(
         mesh_directory="../data/SHREC11_200NEIGH/processed/",
         labels_file="../data/SHREC11_200NEIGH/classes.txt",
         N=9,
         train_percent=0.7,
+        val_percent=0.15,
         device=device,
     )
 
-    # Split the held-out set into val (1/3) and final test (2/3)
-    held_out = test_loader.dataset  # Subset of full_dataset
-    val_size = int(0.33 * len(held_out))
-    final_test_size = len(held_out) - val_size
-    val_subset, final_test_subset = random_split(held_out, [val_size, final_test_size])
-
-    # Extract actual file numbers (val_subset wraps a Subset, so two levels of indexing)
-    val_filenumbers = [
-        held_out.dataset.filenumbers[held_out.indices[i]] for i in val_subset.indices
-    ]
-    final_test_filenumbers = [
-        held_out.dataset.filenumbers[held_out.indices[i]] for i in final_test_subset.indices
-    ]
-
-    val_loader = DataLoader(
-        val_subset, batch_size=1, shuffle=False,
-        num_workers=2, pin_memory=(device == "cuda"),
-    )
-    test_loader = DataLoader(
-        final_test_subset, batch_size=1, shuffle=False,
-        num_workers=2, pin_memory=(device == "cuda"),
-    )
-
     print(
-        f"Train: {len(train_loader)}  Val: {len(val_loader)}  Test: {len(test_loader)}"
+        f"Train: {len(data['train_loader'])}  "
+        f"Val: {len(data['val_loader'])}  "
+        f"Test: {len(data['test_loader'])}"
     )
 
-    model = GETClassifier(N=9, channels=12, heads=2, out_classes=30, num_blocks=1).to(
-        device
-    )
+    model = GETClassifier(N=9, channels=12, heads=2, out_classes=30, num_blocks=1).to(device)
     # model = torch.compile(model)
 
     criterion = nn.CrossEntropyLoss()
@@ -375,18 +363,18 @@ if __name__ == "__main__":
 
     train_loss_hist, val_loss_hist = train(
         model=model,
-        dataloader=train_loader,
+        dataloader=data["train_loader"],
         optimizer=optimizer,
         scheduler=scheduler,
         criterion=criterion,
         device=device,
         epochs=100,
         accumulation_steps=4,
-        val_loader=val_loader,
+        val_loader=data["val_loader"],
         patience=15,
-        train_filenumbers=train_filenumbers,
-        val_filenumbers=val_filenumbers,
-        test_filenumbers=final_test_filenumbers,
+        train_filenumbers=data["train_filenumbers"],
+        val_filenumbers=data["val_filenumbers"],
+        test_filenumbers=data["test_filenumbers"],
     )
 
     print("train_loss_hist:", train_loss_hist)
